@@ -2,6 +2,7 @@ from agent.BasicRole import BasicRole
 import os
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
+from agent.Paimon import chat
 
 load_dotenv()
 
@@ -41,5 +42,5 @@ def test_role_work() -> None:
 
 
 
-test_role_work()
+chat()
 

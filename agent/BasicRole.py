@@ -11,6 +11,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 
+
 class BasicRole:
     """基础角色类：管理提示词、模型配置，并提供 LangGraph 多轮对话模板。"""
 
@@ -83,19 +84,19 @@ class BasicRole:
     ) -> List[Dict[str, str]]:
         """执行一轮对话并返回可继续复用的历史记录。"""
         messages = list(history) if history else []
-        if user_message is None:
-            user_message = self.user_prompt
-        messages.append({"role": "user", "content": user_message})
+        current_user_message = user_message if user_message is not None else self.user_prompt
+
+        # 仅将本轮用户输入包裹在 <user_data> 中传给模型，history 保持原样传递
+        wrapped_user_message = f"<user_data>{current_user_message}</user_data>"
+        messages.append({"role": "user", "content": wrapped_user_message})
 
         result = self.graph.invoke({"messages": messages})
 
-        # 将图状态中的消息转换为可传入下一轮的简洁历史，仅保留用户与助手消息
-        conversation_history: List[Dict[str, str]] = []
-        for msg in result["messages"]:
-            if msg.type == "human":
-                conversation_history.append({"role": "user", "content": str(msg.content)})
-            elif msg.type == "ai":
-                conversation_history.append({"role": "assistant", "content": str(msg.content)})
+        # 返回给业务层的历史使用原始用户输入，不暴露 <user_data> 标签
+        assistant_message = next(msg.content for msg in reversed(result["messages"]) if msg.type == "ai")
+        conversation_history = list(history) if history else []
+        conversation_history.append({"role": "user", "content": current_user_message})
+        conversation_history.append({"role": "assistant", "content": str(assistant_message)})
         return conversation_history
 
     def multi_round_chat(self) -> None:
