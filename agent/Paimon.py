@@ -15,11 +15,15 @@ system_prompt = prompt_config["system_prompt"]
 # 派蒙角色的开场用户提示词：作为首次对话的默认输入
 user_prompt = "你好派蒙，我们开始聊天吧。"
 
-# 用提示词直接实例化基础角色，不传 llm 与 tools，使用默认配置
-Paimon = BasicRole(system_prompt=system_prompt, user_prompt=user_prompt)
+Paimon = BasicRole(
+    system_prompt=system_prompt,
+    user_prompt=user_prompt,
+    vector_collections=["genshin_world_bg"],
+)
 
 
 def chat() -> None:
     """启动派蒙的命令行多轮对话。"""
     Paimon.multi_round_chat()
 
+chat()

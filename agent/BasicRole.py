@@ -3,12 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import os
-from pydantic import SecretStr
+import re
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from search.hybird_search import hybird_search
+
+
+class RoleState(MessagesState):
+    """扩展状态：除 messages 外，额外携带检索得到的 context 文本。"""
+
+    context: str
 
 
 
@@ -21,14 +28,16 @@ class BasicRole:
         user_prompt: str,
         llm: Any | None = None,
         tools:  list[BaseTool] | None = None,
+        vector_collections: list[str] | None = None,
     ) -> None:
-        # 初始化系统提示词与用户提示词（创建实例时必须传入）
+        # 初始化系统提示词与用户提示词
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
 
         # 优先使用外部传入的 llm；未传入时根据 .env 创建默认 ChatOpenAI 实例
         self.llm = llm if llm is not None else self._create_default_llm()
         self.tools = tools
+        self.vector_collections = vector_collections if vector_collections else []
 
         # 实例化时直接编译图，后续对话复用同一个编译结果
         self.graph = self.build_react_graph()
@@ -58,16 +67,47 @@ class BasicRole:
         llm_with_tools = model.bind_tools(tools)
         tool_node = ToolNode(tools)
 
-        # 智能体节点：始终携带系统提示词，并让模型自行决定是否调用工具
-        def call_agent(state: MessagesState) -> Dict[str, List[Any]]:
-            response = llm_with_tools.invoke([SystemMessage(content=self.system_prompt), *state["messages"]])
+        # 检索节点：在进入 agent 前读取最新用户问题，执行混合检索，并把结果写入 state["context"]。
+        def retrieve_context(state: RoleState) -> Dict[str, str]:
+            if len(self.vector_collections) == 0:
+                return {"context": ""}
+
+            latest_user_message = next(
+                msg.content for msg in reversed(state["messages"]) if msg.type == "human"
+            )
+            user_query = re.search(r"<user_data>(.*?)</user_data>", latest_user_message, flags=re.S).group(1).strip()
+            retrieved_context = hybird_search(
+                query=user_query,
+                collection_names=self.vector_collections,
+            )
+            print(f"[RAG] 命中 {len(retrieved_context)} 条", flush=True)
+            context_text = "\n\n".join(
+                (
+                    f"[检索片段{item['rank']}] "
+                    f"{item['source_collection']} | {item['source_file']} | {item['heading_path']}\n"
+                    f"{item['content']}"
+                )
+                for item in retrieved_context
+            )
+            return {"context": context_text}
+
+        # 智能体节点：始终携带系统提示词，并让模型自行决定是否调用工具。
+        # 检索数据直接从 state["context"] 读取并注入模型消息。
+        def call_agent(state: RoleState) -> Dict[str, List[Any]]:
+            model_messages: list[Any] = [SystemMessage(content=self.system_prompt)]
+            if len(state["context"]) > 0:
+                model_messages.append({"role": "user", "content": state["context"]})
+            model_messages.extend(state["messages"])
+            response = llm_with_tools.invoke(model_messages)
             return {"messages": [response]}
 
-        graph_builder = StateGraph(MessagesState)
+        graph_builder = StateGraph(RoleState)
+        graph_builder.add_node("retrieve", retrieve_context)
         graph_builder.add_node("agent", call_agent)
         graph_builder.add_node("tools", tool_node)
 
-        graph_builder.add_edge(START, "agent")
+        graph_builder.add_edge(START, "retrieve")
+        graph_builder.add_edge("retrieve", "agent")
         graph_builder.add_conditional_edges(
             "agent",
             tools_condition,
