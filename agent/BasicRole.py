@@ -30,6 +30,16 @@ class BasicRole:
         tools:  list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
     ) -> None:
+        """
+        初始化基础角色实例，并构建可复用的对话图。
+
+        Args:
+            system_prompt: 系统角色提示词，定义助手行为边界与风格。
+            user_prompt: 默认用户提示词，在未显式传入 user_message 时使用。
+            llm: 可选的外部语言模型实例；不传则按 .env 创建默认模型。
+            tools: 可选工具列表；不传时默认仅启用时间工具。
+            vector_collections: 可选检索集合列表；为空时跳过 RAG 检索。
+        """
         # 初始化系统提示词与用户提示词
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
@@ -69,6 +79,12 @@ class BasicRole:
 
         # 检索节点：在进入 agent 前读取最新用户问题，执行混合检索，并把结果写入 state["context"]。
         def retrieve_context(state: RoleState) -> Dict[str, str]:
+            """
+            从最新用户输入中抽取查询并生成检索上下文。
+
+            Args:
+                state: LangGraph 运行时状态，包含消息历史与上下文字段。
+            """
             if len(self.vector_collections) == 0:
                 return {"context": ""}
 
@@ -94,6 +110,12 @@ class BasicRole:
         # 智能体节点：始终携带系统提示词，并让模型自行决定是否调用工具。
         # 检索数据直接从 state["context"] 读取并注入模型消息。
         def call_agent(state: RoleState) -> Dict[str, List[Any]]:
+            """
+            调用绑定工具的模型生成当前轮回复。
+
+            Args:
+                state: LangGraph 运行时状态，包含消息历史与检索上下文。
+            """
             model_messages: list[Any] = [SystemMessage(content=self.system_prompt)]
             if len(state["context"]) > 0:
                 model_messages.append({"role": "user", "content": state["context"]})
@@ -122,7 +144,13 @@ class BasicRole:
         user_message: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
     ) -> List[Dict[str, str]]:
-        """执行一轮对话并返回可继续复用的历史记录。"""
+        """
+        执行一轮对话并返回可继续复用的历史记录。
+
+        Args:
+            user_message: 本轮用户输入；为空时回退到初始化时的 user_prompt。
+            history: 已有对话历史，格式为 role/content 的字典列表。
+        """
         messages = list(history) if history else []
         current_user_message = user_message if user_message is not None else self.user_prompt
 

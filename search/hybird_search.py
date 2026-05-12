@@ -23,6 +23,9 @@ def _tokenize_for_bm25(text: str) -> list[str]:
     1. 中文使用 jieba 分词；
     2. 英文与数字按词切分；
     3. 只保留有信息量的词元，给 BM25 做更稳定的统计。
+
+    Args:
+        text: 需要进行 BM25 分词的原始查询或文档文本。
     """
     normalized_text = text.lower()
     jieba_tokens = [token.strip() for token in jieba.lcut(normalized_text) if token.strip()]
@@ -35,6 +38,9 @@ def _normalize_text(raw_text: str) -> str:
     对原始文本做轻量清洗，减少 md\world-bg 中图片标记等噪声对检索排序的干扰：
     - 过滤 [Image](...) / ![Image](...) 这类图片行；
     - 合并多余空行。
+
+    Args:
+        raw_text: 待清洗的原始文本内容。
     """
     lines = raw_text.splitlines()
     kept_lines = [
@@ -54,6 +60,10 @@ def _load_documents_from_collections(
     """
     从多个集合滚动读取 payload，用于 BM25 关键词检索。
     返回结构保留了 source_file / heading_path / 行号范围，方便后续注入智能体上下文。
+
+    Args:
+        collection_names: 需要读取的 Qdrant 集合名称列表。
+        scan_limit_per_collection: 每个集合最多读取的文档数量上限。
     """
     qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
     documents: list[dict[str, Any]] = []
@@ -105,6 +115,12 @@ def bm25_keyword_search(
     - 接收多个集合名；
     - 使用 rank-bm25 库统一计算 BM25 分值；
     - 输出按 bm25_score 由高到低排序的文档片段。
+
+    Args:
+        query: 用户查询文本。
+        collection_names: 执行检索的 Qdrant 集合名称列表。
+        top_k: 返回结果的最大条数。
+        scan_limit_per_collection: 每个集合用于 BM25 统计的扫描上限。
     """
     documents = _load_documents_from_collections(
         collection_names=collection_names,
@@ -138,6 +154,11 @@ def vector_search(
     - 先用 embedding_model 把 query 转向量；
     - 再在每个集合中做相似度检索；
     - 输出统一结构，供 RRF 融合。
+
+    Args:
+        query: 用户查询文本。
+        collection_names: 执行向量检索的 Qdrant 集合名称列表。
+        top_k: 向量检索返回的最大候选数量。
     """
     openai_client = OpenAI(
         api_key=os.getenv("api_key"),
@@ -191,6 +212,11 @@ def _select_hits_for_context(
     1. 先按 RRF 相对阈值筛掉弱相关项；
     2. 再按问题长度动态分配总预算；
     3. 最后按每条片段权重做动态截断，返回结构化列表。
+
+    Args:
+        query: 用户查询文本，用于动态调整上下文预算。
+        fused_hits: 已完成 RRF 融合并排序的候选片段列表。
+        top_k: 允许保留到上下文中的最大片段数量。
     """
     if len(fused_hits) == 0:
         return []
@@ -262,6 +288,14 @@ def hybird_search(
     3. 用 RRF 融合两路排序；
     4. 在该文件内完成动态筛选与动态截断；
     5. 返回结构化列表，由 agent 节点在进入 LLM 前再格式化。
+
+    Args:
+        query: 用户查询文本。
+        collection_names: 参与混合检索的 Qdrant 集合名称列表。
+        top_k: 最终返回给上下文注入阶段的片段数量上限。
+        bm25_top_k: BM25 关键词检索阶段保留的候选数量上限。
+        vector_top_k: 向量检索阶段保留的候选数量上限。
+        rrf_k: RRF 融合中的平滑常数，越大越平缓。
     """
     bm25_hits = bm25_keyword_search(
         query=query,
