@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import os
@@ -9,13 +10,19 @@ from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from memory import (
+    format_long_term_memories,
+    retrieve_long_term_memory,
+    save_long_term_memory,
+)
 from search.hybird_search import hybird_search
 
 
 class RoleState(MessagesState):
-    """扩展状态：除 messages 外，额外携带检索得到的 context 文本。"""
+    """扩展状态：除 messages 外，额外携带 RAG 与长期记忆上下文文本。"""
 
     context: str
+    memory_context: str
 
 
 
@@ -26,10 +33,13 @@ class BasicRole:
         self,
         system_prompt: str,
         user_prompt: str,
+        role_id: str,
         llm: Any | None = None,
         tools:  list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
-        memory_rounds: int = 5,
+        memory_rounds: int = 7,
+        memory_user_id: str = "default_user",
+        memory_top_k: int = 5,
     ) -> None:
         """
         初始化基础角色实例，并构建可复用的对话图。
@@ -37,10 +47,13 @@ class BasicRole:
         Args:
             system_prompt: 系统角色提示词，定义助手行为边界与风格。
             user_prompt: 默认用户提示词，在未显式传入 user_message 时使用。
+            role_id: 角色唯一标识，用于路由到对应角色的独立长期记忆集合。
             llm: 可选的外部语言模型实例；不传则按 .env 创建默认模型。
             tools: 可选工具列表；不传时默认仅启用时间工具。
             vector_collections: 可选检索集合列表；为空时跳过 RAG 检索。
             memory_rounds: 保留的近期对话轮数，超过后会触发历史压缩。
+            memory_user_id: 长期记忆使用的用户标识。
+            memory_top_k: 每轮从长期记忆召回的条数上限。
         """
         # 初始化系统提示词与用户提示词
         self.system_prompt = system_prompt
@@ -51,9 +64,36 @@ class BasicRole:
         self.tools = tools
         self.vector_collections = vector_collections if vector_collections else []
         self.memory_rounds = memory_rounds
+        self.role_id = role_id
+        self.memory_user_id = memory_user_id
+        self.memory_top_k = memory_top_k
+        self._memory_save_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"{self.role_id}_memory_save",
+        )
 
         # 实例化时直接编译图，后续对话复用同一个编译结果
         self.graph = self.build_react_graph()
+
+    def _on_memory_saved(self, future: Future[dict[str, Any]]) -> None:
+        """异步记忆写入完成后输出结果。"""
+        error = future.exception()
+        if error is not None:
+            print(f"\n[Mem0] 长期记忆写入失败: {error}", flush=True)
+            return
+        add_result = future.result()
+        print(f"\n[Mem0] 本轮新增长期记忆 {len(add_result['results'])} 条", flush=True)
+
+    def _save_memory_async(self, user_message: str, assistant_message: str) -> None:
+        """异步写入本轮对话，不阻塞主对话流程。"""
+        future = self._memory_save_executor.submit(
+            save_long_term_memory,
+            role_id=self.role_id,
+            user_id=self.memory_user_id,
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
+        future.add_done_callback(self._on_memory_saved)
 
     def compress_history(self, history: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """当轮数超过阈值时，把旧对话压缩为摘要并写回历史。"""
@@ -109,6 +149,39 @@ class BasicRole:
         llm_with_tools = model.bind_tools(tools)
         tool_node = ToolNode(tools)
 
+        def extract_user_query(state: RoleState) -> str:
+            """
+            从最新用户消息中提取原始问题文本。
+
+            这里统一复用 <user_data> 标签解析逻辑，避免 RAG 与长期记忆节点重复实现。
+
+            Args:
+                state: LangGraph 运行时状态。
+            """
+            latest_user_message = next(
+                msg.content for msg in reversed(state["messages"]) if msg.type == "human"
+            )
+            return re.search(r"<user_data>(.*?)</user_data>", latest_user_message, flags=re.S).group(1).strip()
+
+        # 长期记忆检索节点：
+        # 在进入 agent 前，先按角色与用户维度从 mem0 召回长期记忆，写入 state["memory_context"]。
+        def retrieve_memory_context(state: RoleState) -> Dict[str, str]:
+            """
+            召回 mem0 长期记忆并格式化为可注入模型的上下文文本。
+
+            Args:
+                state: LangGraph 运行时状态。
+            """
+            user_query = extract_user_query(state)
+            memory_hits = retrieve_long_term_memory(
+                role_id=self.role_id,
+                user_id=self.memory_user_id,
+                query=user_query,
+                top_k=self.memory_top_k,
+            )
+            print(f"[Mem0] 长期记忆召回 {len(memory_hits)} 条", flush=True)
+            return {"memory_context": format_long_term_memories(memory_hits)}
+
         # 检索节点：在进入 agent 前读取最新用户问题，执行混合检索，并把结果写入 state["context"]。
         def retrieve_context(state: RoleState) -> Dict[str, str]:
             """
@@ -120,10 +193,7 @@ class BasicRole:
             if len(self.vector_collections) == 0:
                 return {"context": ""}
 
-            latest_user_message = next(
-                msg.content for msg in reversed(state["messages"]) if msg.type == "human"
-            )
-            user_query = re.search(r"<user_data>(.*?)</user_data>", latest_user_message, flags=re.S).group(1).strip()
+            user_query = extract_user_query(state)
             retrieved_context = hybird_search(
                 query=user_query,
                 collection_names=self.vector_collections,
@@ -149,6 +219,13 @@ class BasicRole:
                 state: LangGraph 运行时状态，包含消息历史与检索上下文。
             """
             model_messages: list[Any] = [SystemMessage(content=self.system_prompt)]
+            if len(state["memory_context"]) > 0:
+                model_messages.append(
+                    {
+                        "role": "user",
+                        "content": f"以下是该用户在当前角色下的长期记忆，请用于个性化回答：\n{state['memory_context']}",
+                    }
+                )
             if len(state["context"]) > 0:
                 model_messages.append({"role": "user", "content": state["context"]})
             model_messages.extend(state["messages"])
@@ -156,11 +233,13 @@ class BasicRole:
             return {"messages": [response]}
 
         graph_builder = StateGraph(RoleState)
+        graph_builder.add_node("memory_retrieve", retrieve_memory_context)
         graph_builder.add_node("retrieve", retrieve_context)
         graph_builder.add_node("agent", call_agent)
         graph_builder.add_node("tools", tool_node)
 
-        graph_builder.add_edge(START, "retrieve")
+        graph_builder.add_edge(START, "memory_retrieve")
+        graph_builder.add_edge("memory_retrieve", "retrieve")
         graph_builder.add_edge("retrieve", "agent")
         graph_builder.add_conditional_edges(
             "agent",
@@ -197,6 +276,13 @@ class BasicRole:
         conversation_history = list(history) if history else []
         conversation_history.append({"role": "user", "content": current_user_message})
         conversation_history.append({"role": "assistant", "content": str(assistant_message)})
+
+        # 把本轮对话异步写入 mem0 长期记忆，避免阻塞主对话线程。
+        self._save_memory_async(
+            user_message=current_user_message,
+            assistant_message=str(assistant_message),
+        )
+
         return self.compress_history(conversation_history)
 
     def multi_round_chat(self) -> None:
@@ -212,6 +298,3 @@ class BasicRole:
 
             assistant_message = next(msg["content"] for msg in reversed(history) if msg["role"] == "assistant")
             print(f"助手: {assistant_message}")
-
-        # TODO: 后续添加对话历史持久化与长期记忆能力。
-
