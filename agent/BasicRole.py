@@ -29,6 +29,7 @@ class BasicRole:
         llm: Any | None = None,
         tools:  list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
+        memory_rounds: int = 5,
     ) -> None:
         """
         初始化基础角色实例，并构建可复用的对话图。
@@ -39,6 +40,7 @@ class BasicRole:
             llm: 可选的外部语言模型实例；不传则按 .env 创建默认模型。
             tools: 可选工具列表；不传时默认仅启用时间工具。
             vector_collections: 可选检索集合列表；为空时跳过 RAG 检索。
+            memory_rounds: 保留的近期对话轮数，超过后会触发历史压缩。
         """
         # 初始化系统提示词与用户提示词
         self.system_prompt = system_prompt
@@ -48,9 +50,39 @@ class BasicRole:
         self.llm = llm if llm is not None else self._create_default_llm()
         self.tools = tools
         self.vector_collections = vector_collections if vector_collections else []
+        self.memory_rounds = memory_rounds
 
         # 实例化时直接编译图，后续对话复用同一个编译结果
         self.graph = self.build_react_graph()
+
+    def compress_history(self, history: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """当轮数超过阈值时，把旧对话压缩为摘要并写回历史。"""
+        round_count = sum(1 for msg in history if msg["role"] == "user")
+        if round_count <= self.memory_rounds:
+            return history
+
+        keep_count = self.memory_rounds * 2
+        recent_messages = history[-keep_count:]
+        old_messages = history[:-keep_count]
+
+        # 将被压缩的历史格式化后交给模型总结，形成可继续复用的长期记忆。
+        old_dialogue_text = "\n".join(
+            f"{'用户' if msg['role'] == 'user' else '助手' if msg['role'] == 'assistant' else '系统'}：{msg['content']}"
+            for msg in old_messages
+        )
+        summary_prompt = (
+            "请把下面的历史对话压缩成简洁记忆，保留事实、偏好、约束、已完成事项和待办线索，"
+            "避免寒暄与重复。输出中文摘要：\n\n"
+            f"{old_dialogue_text}"
+        )
+        summary_result = self.llm.invoke([{"role": "user", "content": summary_prompt}])
+        summary_text = str(summary_result.content)
+
+        compressed_history = [
+            {"role": "user", "content": f"以下是较早对话的记忆摘要：\n{summary_text}"}
+        ]
+        compressed_history.extend(recent_messages)
+        return compressed_history
 
     @classmethod
     def _create_default_llm(cls) -> Any:
@@ -165,10 +197,10 @@ class BasicRole:
         conversation_history = list(history) if history else []
         conversation_history.append({"role": "user", "content": current_user_message})
         conversation_history.append({"role": "assistant", "content": str(assistant_message)})
-        return conversation_history
+        return self.compress_history(conversation_history)
 
     def multi_round_chat(self) -> None:
-        """命令行多轮对话：循环调用 chat，并只保留最近 5 轮记忆。"""
+        """命令行多轮对话：循环调用 chat，历史由压缩记忆机制自动维护。"""
         history: List[Dict[str, str]] = []
         while True:
             user_message = input("你: ")
@@ -180,9 +212,6 @@ class BasicRole:
 
             assistant_message = next(msg["content"] for msg in reversed(history) if msg["role"] == "assistant")
             print(f"助手: {assistant_message}")
-
-            # 仅保留最近 5 轮（每轮 2 条：用户 + 助手）
-            history = history[-10:]
 
         # TODO: 后续添加对话历史持久化与长期记忆能力。
 
