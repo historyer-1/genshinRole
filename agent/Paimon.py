@@ -18,7 +18,6 @@ user_prompt = "你好派蒙，我们开始聊天吧。"
 Paimon = BasicRole(
     system_prompt=system_prompt,
     user_prompt=user_prompt,
-    role_id="paimon",
     vector_collections=["genshin_world_bg"],
 )
 
