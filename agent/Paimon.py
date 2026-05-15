@@ -19,6 +19,7 @@ Paimon = BasicRole(
     system_prompt=system_prompt,
     user_prompt=user_prompt,
     vector_collections=["genshin_world_bg"],
+    user_id="paimon_default_user",
 )
 
 

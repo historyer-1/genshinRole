@@ -9,6 +9,7 @@ from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from memory.mem import LongMem, MemPort
 from search.hybird_search import hybird_search
 
 
@@ -27,9 +28,11 @@ class BasicRole:
         system_prompt: str,
         user_prompt: str,
         llm: Any | None = None,
-        tools:  list[BaseTool] | None = None,
+        tools: list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
-        memory_rounds: int = 5,
+        memory_rounds: int = 7,
+        user_id: str = "default_user",
+        long_mem: MemPort | None = None,
     ) -> None:
         """
         初始化基础角色实例，并构建可复用的对话图。
@@ -41,6 +44,8 @@ class BasicRole:
             tools: 可选工具列表；不传时默认仅启用时间工具。
             vector_collections: 可选检索集合列表；为空时跳过 RAG 检索。
             memory_rounds: 保留的近期对话轮数，超过后会触发历史压缩。
+            user_id: 当前会话所属用户，用于隔离不同用户的长期记忆空间。
+            long_mem: 长期记忆端口实现，不传时默认使用基于 mem0 的 LongMem。
         """
         # 初始化系统提示词与用户提示词
         self.system_prompt = system_prompt
@@ -51,6 +56,9 @@ class BasicRole:
         self.tools = tools
         self.vector_collections = vector_collections if vector_collections else []
         self.memory_rounds = memory_rounds
+        self.user_id = user_id
+        # BasicRole 只依赖长期记忆端口，不依赖 mem0 的具体初始化细节。
+        self.long_mem = long_mem if long_mem is not None else LongMem(user_id=user_id)
 
         # 实例化时直接编译图，后续对话复用同一个编译结果
         self.graph = self.build_react_graph()
@@ -117,26 +125,34 @@ class BasicRole:
             Args:
                 state: LangGraph 运行时状态，包含消息历史与上下文字段。
             """
-            if len(self.vector_collections) == 0:
-                return {"context": ""}
-
             latest_user_message = next(
                 msg.content for msg in reversed(state["messages"]) if msg.type == "human"
             )
             user_query = re.search(r"<user_data>(.*?)</user_data>", latest_user_message, flags=re.S).group(1).strip()
-            retrieved_context = hybird_search(
-                query=user_query,
-                collection_names=self.vector_collections,
-            )
-            print(f"[RAG] 命中 {len(retrieved_context)} 条", flush=True)
-            context_text = "\n\n".join(
-                (
-                    f"[检索片段{item['rank']}] "
-                    f"{item['source_collection']} | {item['source_file']} | {item['heading_path']}\n"
-                    f"{item['content']}"
+
+            # 先读用户长期记忆，补齐跨会话背景（偏好、事实、长期目标等）。
+            long_context = self.long_mem.find(user_query)
+
+            # 再做 RAG 检索，补齐业务知识库内容。
+            rag_context = ""
+            if len(self.vector_collections) > 0:
+                retrieved_context = hybird_search(
+                    query=user_query,
+                    collection_names=self.vector_collections,
                 )
-                for item in retrieved_context
-            )
+                print(f"[RAG] 命中 {len(retrieved_context)} 条", flush=True)
+                rag_context = "\n\n".join(
+                    (
+                        f"[检索片段{item['rank']}] "
+                        f"{item['source_collection']} | {item['source_file']} | {item['heading_path']}\n"
+                        f"{item['content']}"
+                    )
+                    for item in retrieved_context
+                )
+
+            # 长期记忆与 RAG 统一拼接到同一段 context，供 agent 节点直接注入。
+            context_parts = [text for text in [long_context, rag_context] if len(text) > 0]
+            context_text = "\n\n".join(context_parts)
             return {"context": context_text}
 
         # 智能体节点：始终携带系统提示词，并让模型自行决定是否调用工具。
@@ -194,9 +210,14 @@ class BasicRole:
 
         # 返回给业务层的历史使用原始用户输入，不暴露 <user_data> 标签
         assistant_message = next(msg.content for msg in reversed(result["messages"]) if msg.type == "ai")
+        assistant_text = str(assistant_message)
+
+        # 长期记忆写入改为异步提交：本轮回答先返回，记忆后台落库。
+        self.long_mem.save_async(current_user_message, assistant_text)
+
         conversation_history = list(history) if history else []
         conversation_history.append({"role": "user", "content": current_user_message})
-        conversation_history.append({"role": "assistant", "content": str(assistant_message)})
+        conversation_history.append({"role": "assistant", "content": assistant_text})
         return self.compress_history(conversation_history)
 
     def multi_round_chat(self) -> None:
@@ -212,6 +233,4 @@ class BasicRole:
 
             assistant_message = next(msg["content"] for msg in reversed(history) if msg["role"] == "assistant")
             print(f"助手: {assistant_message}")
-
-        # TODO: 后续添加对话历史持久化与长期记忆能力。
 
