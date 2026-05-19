@@ -9,7 +9,7 @@ from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
-from memory.mem import LongMem, MemPort
+from memory.mem import LongMem
 from search.hybird_search import hybird_search
 
 
@@ -31,8 +31,7 @@ class BasicRole:
         tools: list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
         memory_rounds: int = 7,
-        user_id: str = "default_user",
-        long_mem: MemPort | None = None,
+        user_id: str | None = "default_user",
     ) -> None:
         """
         初始化基础角色实例，并构建可复用的对话图。
@@ -44,8 +43,7 @@ class BasicRole:
             tools: 可选工具列表；不传时默认仅启用时间工具。
             vector_collections: 可选检索集合列表；为空时跳过 RAG 检索。
             memory_rounds: 保留的近期对话轮数，超过后会触发历史压缩。
-            user_id: 当前会话所属用户，用于隔离不同用户的长期记忆空间。
-            long_mem: 长期记忆端口实现，不传时默认使用基于 mem0 的 LongMem。
+            user_id: 当前会话所属用户；传 None 时不启用长期记忆。
         """
         # 初始化系统提示词与用户提示词
         self.system_prompt = system_prompt
@@ -58,7 +56,7 @@ class BasicRole:
         self.memory_rounds = memory_rounds
         self.user_id = user_id
         # BasicRole 只依赖长期记忆端口，不依赖 mem0 的具体初始化细节。
-        self.long_mem = long_mem if long_mem is not None else LongMem(user_id=user_id)
+        self.long_mem = LongMem(user_id=user_id) if user_id is not None else None
 
         # 实例化时直接编译图，后续对话复用同一个编译结果
         self.graph = self.build_react_graph()
@@ -131,7 +129,7 @@ class BasicRole:
             user_query = re.search(r"<user_data>(.*?)</user_data>", latest_user_message, flags=re.S).group(1).strip()
 
             # 先读用户长期记忆，补齐跨会话背景（偏好、事实、长期目标等）。
-            long_context = self.long_mem.find(user_query)
+            long_context = self.long_mem.find(user_query) if self.long_mem is not None else ""
 
             # 再做 RAG 检索，补齐业务知识库内容。
             rag_context = ""
@@ -213,7 +211,8 @@ class BasicRole:
         assistant_text = str(assistant_message)
 
         # 长期记忆写入改为异步提交：本轮回答先返回，记忆后台落库。
-        self.long_mem.save_async(current_user_message, assistant_text)
+        if self.long_mem is not None:
+            self.long_mem.save_async(current_user_message, assistant_text)
 
         conversation_history = list(history) if history else []
         conversation_history.append({"role": "user", "content": current_user_message})
@@ -233,4 +232,3 @@ class BasicRole:
 
             assistant_message = next(msg["content"] for msg in reversed(history) if msg["role"] == "assistant")
             print(f"助手: {assistant_message}")
-
