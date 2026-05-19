@@ -21,6 +21,7 @@ def search(query: str) -> str:
     Args:
         query: 需要搜索的关键词或问题。
     """
+    print(f"[联网搜索] {query}", flush=True)
     # 从 .env 读取 searxng_url，拼接搜索接口地址
     base_url = os.getenv("searxng_url")
     response = requests.get(

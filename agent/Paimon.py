@@ -21,6 +21,7 @@ role_tools = get_xng_tools()
 Paimon = BasicRole(
     system_prompt=system_prompt,
     user_prompt=user_prompt,
+    role="派蒙",
     tools=role_tools,
     vector_collections=["genshin_world_bg","genshin_story"],
     user_id="paimon_default_user",

@@ -27,7 +27,7 @@ def test_api():
 
 def test_role_work() -> None:
     
-    role_default = BasicRole(system_prompt="你是助手", user_prompt="请开始对话")
+    role_default = BasicRole(system_prompt="你是助手", user_prompt="请开始对话", role="助手")
 
 
     dummy_llm = ChatOpenAI(
@@ -36,11 +36,10 @@ def test_role_work() -> None:
             base_url=os.getenv("base_url"),
             max_tokens=50000,
         )
-    role = BasicRole(system_prompt="你是助手", user_prompt="请开始对话", llm=dummy_llm)
+    role = BasicRole(system_prompt="你是助手", user_prompt="请开始对话", role="助手", llm=dummy_llm)
     role.multi_round_chat()
 
 
 
 
 chat()
-

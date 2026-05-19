@@ -50,6 +50,7 @@ class LongMem:
             top_k=self.top_k,
         )
         rows: List[Dict[str, Any]] = result["results"]
+        print(f"[长期记忆] 命中 {len(rows)} 条", flush=True)
         if len(rows) == 0:
             return ""
 

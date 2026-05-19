@@ -27,6 +27,7 @@ class BasicRole:
         self,
         system_prompt: str,
         user_prompt: str,
+        role: str,
         llm: Any | None = None,
         tools: list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
@@ -39,6 +40,7 @@ class BasicRole:
         Args:
             system_prompt: 系统角色提示词，定义助手行为边界与风格。
             user_prompt: 默认用户提示词，在未显式传入 user_message 时使用。
+            role: 角色名称，用于 RAG 检索增强角色相关性。
             llm: 可选的外部语言模型实例；不传则按 .env 创建默认模型。
             tools: 可选工具列表；不传时默认仅启用时间工具。
             vector_collections: 可选检索集合列表；为空时跳过 RAG 检索。
@@ -48,6 +50,7 @@ class BasicRole:
         # 初始化系统提示词与用户提示词
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
+        self.role = role
 
         # 优先使用外部传入的 llm；未传入时根据 .env 创建默认 ChatOpenAI 实例
         self.llm = llm if llm is not None else self._create_default_llm()
@@ -134,8 +137,9 @@ class BasicRole:
             # 再做 RAG 检索，补齐业务知识库内容。
             rag_context = ""
             if len(self.vector_collections) > 0:
+                rag_query = f"{self.role} {user_query}" if self.role else user_query
                 retrieved_context = hybird_search(
-                    query=user_query,
+                    query=rag_query,
                     collection_names=self.vector_collections,
                 )
                 print(f"[RAG] 命中 {len(retrieved_context)} 条", flush=True)

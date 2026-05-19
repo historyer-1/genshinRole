@@ -163,6 +163,7 @@ def main() -> None:
     role_agent = BasicRole(
         system_prompt=system_prompt,
         user_prompt=f"你好{role_data['role']}，我们开始聊天吧。",
+        role=role_data["role"],
         tools=role_tools,
         vector_collections=["genshin_world_bg", "genshin_story"],
         user_id=f"{args.role}_default_user",
