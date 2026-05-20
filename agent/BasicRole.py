@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import asyncio
 import os
 import re
 from langchain_core.messages import SystemMessage
@@ -167,9 +168,10 @@ class BasicRole:
                 state: LangGraph 运行时状态，包含消息历史与检索上下文。
             """
             model_messages: list[Any] = [SystemMessage(content=self.system_prompt)]
+            model_messages.extend(state["messages"])
+            # 检索结果放在历史与当前用户输入之后
             if len(state["context"]) > 0:
                 model_messages.append({"role": "user", "content": state["context"]})
-            model_messages.extend(state["messages"])
             response = llm_with_tools.invoke(model_messages)
             return {"messages": [response]}
 
@@ -208,7 +210,8 @@ class BasicRole:
         wrapped_user_message = f"<user_data>{current_user_message}</user_data>"
         messages.append({"role": "user", "content": wrapped_user_message})
 
-        result = self.graph.invoke({"messages": messages})
+        # MCP 工具是异步实现，需走异步图执行以避免同步调用报错
+        result = asyncio.run(self.graph.ainvoke({"messages": messages}))
 
         # 返回给业务层的历史使用原始用户输入，不暴露 <user_data> 标签
         assistant_message = next(msg.content for msg in reversed(result["messages"]) if msg.type == "ai")

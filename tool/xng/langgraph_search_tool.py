@@ -1,6 +1,7 @@
 from pathlib import Path
 import asyncio
 import os
+from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 import httpx
@@ -26,6 +27,11 @@ def get_xng_tools(mcp_url: str = "") -> list[BaseTool]:
         raise ValueError("xng_mcp_url 未配置，请在 .env 中设置如 http://127.0.0.1:9000/sse")
     if not (url.startswith("http://") or url.startswith("https://")):
         url = f"http://{url}"
+
+    # 未指定路径时默认补上 FastMCP 的 SSE 入口，避免访问根路径导致 404
+    parsed = urlparse(url)
+    if parsed.path in ("", "/"):
+        url = urlunparse(parsed._replace(path="/sse"))
 
     # 连接 MCP Server 并拉取可供 LangGraph 使用的工具对象
     client = MultiServerMCPClient(
