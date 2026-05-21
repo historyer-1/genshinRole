@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from fastmcp import FastMCP
 import requests
 
-
+MAX_RESULTS = 5
 # 加载项目根目录 .env，用于读取联网搜索地址
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=False)
@@ -28,17 +28,21 @@ def search(query: str) -> str:
         raise ValueError("searxng_url 未配置，请在 .env 中设置如 http://127.0.0.1:8887")
     if not (base_url.startswith("http://") or base_url.startswith("https://")):
         base_url = f"http://{base_url}"
-    response = requests.get(
-        f"{base_url.rstrip('/')}/search",
-        params={"q": query, "format": "json"},
-        timeout=15,
-    )
-    response.raise_for_status()
-    data = response.json()
+    try:
+        response = requests.get(
+            f"{base_url.rstrip('/')}/search",
+            params={"q": query, "format": "json"},
+            timeout=25,
+        )
+        response.raise_for_status()
+        data = response.json().get("results",[])[:MAX_RESULTS]
+    except requests.Timeout:
+        print(f"[联网搜索] 超时，跳过本次搜索：{query}", flush=True)
+        return ""
 
     # 拼接标题、链接与摘要，便于模型引用与复述
     result_list = []
-    for item in data["results"]:
+    for item in data:
         title = str(item["title"])
         url = str(item["url"])
         content = str(item["content"])

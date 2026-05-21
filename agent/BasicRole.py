@@ -187,7 +187,32 @@ class BasicRole:
             tools_condition,
             {"tools": "tools", "__end__": END},
         )
-        graph_builder.add_edge("tools", "agent")
+
+        # 角色攻略工具直接输出，其余工具继续回到 agent
+        direct_tools = {
+            "role_base",
+            "role_attr",
+            "role_info",
+            "role_con",
+            "role_skill",
+            "role_talent",
+        }
+
+        def route_tool(state: RoleState) -> str:
+            """
+            根据工具名决定是否直接结束本轮对话。
+
+            Args:
+                state: LangGraph 运行时状态，包含消息历史与检索上下文。
+            """
+            last_tool = next(msg for msg in reversed(state["messages"]) if msg.type == "tool")
+            return "__end__" if last_tool.name in direct_tools else "agent"
+
+        graph_builder.add_conditional_edges(
+            "tools",
+            route_tool,
+            {"agent": "agent", "__end__": END},
+        )
 
         return graph_builder.compile()
  
@@ -214,7 +239,9 @@ class BasicRole:
         result = asyncio.run(self.graph.ainvoke({"messages": messages}))
 
         # 返回给业务层的历史使用原始用户输入，不暴露 <user_data> 标签
-        assistant_message = next(msg.content for msg in reversed(result["messages"]) if msg.type == "ai")
+        assistant_message = next(
+            msg.content for msg in reversed(result["messages"]) if msg.type in {"ai", "tool"}
+        )
         assistant_text = str(assistant_message)
 
         # 长期记忆写入改为异步提交：本轮回答先返回，记忆后台落库。
