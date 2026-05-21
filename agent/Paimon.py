@@ -72,5 +72,6 @@ def start_paimon(mcp_url: str = "") -> None:
         tools=role_tools,
         vector_collections=["genshin_world_bg", "genshin_story"],
         user_id="paimon_default_user",
+        stream_output=True,
     )
     agent.multi_round_chat()

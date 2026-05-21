@@ -1,11 +1,12 @@
 from pathlib import Path
 import os
+import sys
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 import requests
 
-MAX_RESULTS = 5
+MAX_RESULTS = 10
 # 加载项目根目录 .env，用于读取联网搜索地址
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=False)
@@ -21,7 +22,8 @@ def search(query: str) -> str:
     Args:
         query: 需要搜索的关键词或问题。
     """
-    print(f"[联网搜索] {query}", flush=True)
+    # 联网搜索日志输出到 stderr，避免与回答内容混在一起
+    print(f"[联网搜索] {query}", file=sys.stderr, flush=True)
     # 从 .env 读取 searxng_url，缺少协议时默认补上 http://
     base_url = str(os.getenv("searxng_url", "")).strip()
     if len(base_url) == 0:
@@ -37,7 +39,7 @@ def search(query: str) -> str:
         response.raise_for_status()
         data = response.json().get("results",[])[:MAX_RESULTS]
     except requests.Timeout:
-        print(f"[联网搜索] 超时，跳过本次搜索：{query}", flush=True)
+        print(f"[联网搜索] 超时，跳过本次搜索：{query}", file=sys.stderr, flush=True)
         return ""
 
     # 拼接标题、链接与摘要，便于模型引用与复述

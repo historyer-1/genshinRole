@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import sys
 import asyncio
 import os
 import re
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, merge_message_runs
 from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -33,6 +34,7 @@ class BasicRole:
         tools: list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
         memory_rounds: int = 7,
+        stream_output: bool = False,
         user_id: str | None = "default_user",
     ) -> None:
         """
@@ -46,6 +48,7 @@ class BasicRole:
             tools: 可选工具列表；不传时默认仅启用时间工具。
             vector_collections: 可选检索集合列表；为空时跳过 RAG 检索。
             memory_rounds: 保留的近期对话轮数，超过后会触发历史压缩。
+            stream_output: 是否启用流式输出（仅影响模型回复展示），默认关闭。
             user_id: 当前会话所属用户；传 None 时不启用长期记忆。
         """
         # 初始化系统提示词与用户提示词
@@ -58,6 +61,7 @@ class BasicRole:
         self.tools = tools
         self.vector_collections = vector_collections if vector_collections else []
         self.memory_rounds = memory_rounds
+        self.stream_output = stream_output
         self.user_id = user_id
         # BasicRole 只依赖长期记忆端口，不依赖 mem0 的具体初始化细节。
         self.long_mem = LongMem(user_id=user_id) if user_id is not None else None
@@ -143,7 +147,8 @@ class BasicRole:
                     query=rag_query,
                     collection_names=self.vector_collections,
                 )
-                print(f"[RAG] 命中 {len(retrieved_context)} 条", flush=True)
+                # 检索日志走 stderr，避免与回答内容混在一起
+                print(f"[RAG] 命中 {len(retrieved_context)} 条", file=sys.stderr, flush=True)
                 rag_context = "\n\n".join(
                     (
                         f"[检索片段{item['rank']}] "
@@ -172,7 +177,15 @@ class BasicRole:
             # 检索结果放在历史与当前用户输入之后
             if len(state["context"]) > 0:
                 model_messages.append({"role": "user", "content": state["context"]})
-            response = llm_with_tools.invoke(model_messages)
+            if self.stream_output:
+                # 直接消费模型流式输出，并拼成完整消息供图继续处理
+                chunks: list[Any] = []
+                for chunk in llm_with_tools.stream(model_messages):
+                    print(chunk.content, end="", flush=True)
+                    chunks.append(chunk)
+                response = merge_message_runs(chunks, chunk_separator="")[-1]
+            else:
+                response = llm_with_tools.invoke(model_messages)
             return {"messages": [response]}
 
         graph_builder = StateGraph(RoleState)
@@ -262,7 +275,11 @@ class BasicRole:
                 print("对话已结束。")
                 break
 
-            history = self.chat(user_message=user_message, history=history)
-
-            assistant_message = next(msg["content"] for msg in reversed(history) if msg["role"] == "assistant")
-            print(f"助手: {assistant_message}")
+            if self.stream_output:
+                # 流式模式下内容已在模型调用处输出，这里输出分割线提示
+                history = self.chat(user_message=user_message, history=history)
+                print("\n----- 助手 -----")
+            else:
+                history = self.chat(user_message=user_message, history=history)
+                assistant_message = next(msg["content"] for msg in reversed(history) if msg["role"] == "assistant")
+                print(f"助手: {assistant_message}")

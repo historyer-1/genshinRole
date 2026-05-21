@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Protocol
+import sys
 
 from mem0 import Memory
 from memory.config import mem0_cfg
@@ -50,7 +51,8 @@ class LongMem:
             top_k=self.top_k,
         )
         rows: List[Dict[str, Any]] = result["results"]
-        print(f"[长期记忆] 命中 {len(rows)} 条", flush=True)
+        # 长期记忆命中日志输出到 stderr，便于与回答内容分离
+        print(f"[长期记忆] 命中 {len(rows)} 条", file=sys.stderr, flush=True)
         if len(rows) == 0:
             return ""
 

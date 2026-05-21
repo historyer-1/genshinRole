@@ -106,5 +106,6 @@ def start_role(role: str, mcp_url: str = "") -> None:
         tools=role_tools,
         vector_collections=["genshin_world_bg", "genshin_story"],
         user_id=f"{role}_default_user",
+        stream_output=True,
     )
     role_agent.multi_round_chat()

@@ -1,9 +1,4 @@
-import socket
 import threading
-import time
-
-from agent.Paimon import start_paimon
-from agent.run.role import start_role
 from tool.xng import xng_server
 
 
@@ -21,7 +16,7 @@ def run_mcp(host: str, port: int) -> None:
 
 def start_mcp(host: str = "127.0.0.1", port: int = 9000) -> threading.Thread:
     """
-    在独立线程启动 xng FastMCP 服务，并等待服务就绪。
+    在独立线程启动 xng FastMCP 服务。
 
     Args:
         host: FastMCP 监听地址。
@@ -30,15 +25,8 @@ def start_mcp(host: str = "127.0.0.1", port: int = 9000) -> threading.Thread:
     # 独立线程启动 fastmcp
     thread = threading.Thread(target=run_mcp, args=(host, port), daemon=True)
     thread.start()
-
-    # 等待端口可连接，确认服务已拉起
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.5)
-            if sock.connect_ex((host, port)) == 0:
-                break
-        time.sleep(0.1)
     return thread
+
 
 
 def main() -> None:
@@ -50,6 +38,8 @@ def main() -> None:
     """
     # 先启动 fastmcp 服务
     start_mcp()
+    from agent.Paimon import start_paimon
+    from agent.run.role import start_role
 
     choice = input("选择 1=派蒙，2=角色：").strip()
     if choice == "1":

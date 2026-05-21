@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+import sys
 
 from langchain_core.tools import tool
 
@@ -20,6 +21,25 @@ def read_role(role: str) -> dict[str, Any]:
     role_path = ROLE_DIR / f"{role}.json"
     with role_path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def miss(role: str, err: FileNotFoundError) -> dict[str, Any]:
+    """找不到角色文件时，返回可直接给模型的错误信息。"""
+    # 记录错误日志，避免工具调用直接崩溃
+    print(f"[角色工具] 找不到角色数据文件：{role}", file=sys.stderr, flush=True)
+    return {
+        "角色": role,
+        "错误": str(err),
+        "可能原因": "角色数据文件名为中文，请使用角色中文名（例如：胡桃），不要使用英文名或拼音。",
+    }
+
+
+def run(role: str, label: str, fn: Callable[[str], Any]) -> dict[str, Any]:
+    """统一封装工具调用，缺失角色文件时返回错误信息。"""
+    try:
+        return {"角色": role, label: fn(role)}
+    except FileNotFoundError as err:
+        return miss(role, err)
 
 
 def pick(blocks: list[dict[str, Any]], name: str) -> dict[str, Any]:
@@ -40,7 +60,7 @@ def q_role(role: str) -> dict[str, Any]:
     查询角色基础信息（模板：角色）。
 
     Args:
-        role: 角色文件名（不含 .json）。
+        role: 角色中文名（不含 .json）。
     """
     raw = read_role(role)
     return pick(raw["blocks"], "角色")["data"]
@@ -154,7 +174,7 @@ def role_base(role: str) -> dict[str, Any]:
         }
         ```
     """
-    return {"角色": role, "数据": q_role(role)}
+    return run(role, "数据", q_role)
 
 
 @tool
@@ -172,7 +192,7 @@ def role_attr(role: str) -> dict[str, Any]:
     未破70、突破70、未破80、突破80、未破90、突破90）。
 
     Args:
-        role: 角色文件名（不含 .json）。
+        role: 角色中文名（不含 .json）。
 
     输出示例:
         ```json
@@ -189,7 +209,7 @@ def role_attr(role: str) -> dict[str, Any]:
         }
         ```
     """
-    return {"角色": role, "属性数据": q_attr(role)}
+    return run(role, "属性数据", q_attr)
 
 
 @tool
@@ -200,7 +220,7 @@ def role_break(role: str) -> dict[str, Any]:
     信息中缺少材料的数量，请你联网搜索各材料需要的数量再整理给用户。
 
     Args:
-        role: 角色文件名（不含 .json）。
+        role: 角色中文名（不含 .json）。
 
     输出示例:
         ```json
@@ -217,7 +237,7 @@ def role_break(role: str) -> dict[str, Any]:
         }
         ```
     """
-    return {"角色": role, "突破简": q_break(role)}
+    return run(role, "突破简", q_break)
 
 
 @tool
@@ -227,7 +247,7 @@ def role_info(role: str) -> dict[str, Any]:
     生日、体型、卡池名、个人任务、角色属性、衣装名称、归属、职业、名片名称、名片描述。
 
     Args:
-        role: 角色文件名（不含 .json）。
+        role: 角色中文名（不含 .json）。
 
     输出示例:
         ```json
@@ -244,7 +264,7 @@ def role_info(role: str) -> dict[str, Any]:
         }
         ```
     """
-    return {"角色": role, "信息": q_info(role)}
+    return run(role, "信息", q_info)
 
 
 @tool
@@ -255,7 +275,7 @@ def role_con(role: str) -> dict[str, Any]:
     命之座4、命之座4效果、命之座5、命之座5效果、命之座6、命之座6效果。
 
     Args:
-        role: 角色文件名（不含 .json）。
+        role: 角色中文名（不含 .json）。
 
     输出示例:
         ```json
@@ -268,7 +288,7 @@ def role_con(role: str) -> dict[str, Any]:
         }
         ```
     """
-    return {"角色": role, "命之座": q_con(role)}
+    return run(role, "命之座", q_con)
 
 
 @tool
@@ -278,7 +298,7 @@ def role_skill(role: str) -> dict[str, Any]:
     字段包括：序号、技能名。
 
     Args:
-        role: 角色文件名（不含 .json）。
+        role: 角色中文名（不含 .json）。
 
     输出示例:
         ```json
@@ -291,7 +311,7 @@ def role_skill(role: str) -> dict[str, Any]:
         }
         ```
     """
-    return {"角色": role, "技能列表": q_skill(role)}
+    return run(role, "技能列表", q_skill)
 
 
 @tool
@@ -302,7 +322,7 @@ def role_talent(role: str) -> dict[str, Any]:
     （如 属性1LV1..属性1LV15、属性2LV1..属性2LV15）。
 
     Args:
-        role: 角色文件名（不含 .json）。
+        role: 角色中文名（不含 .json）。
 
     输出示例:
         ```json
@@ -321,4 +341,4 @@ def role_talent(role: str) -> dict[str, Any]:
         }
         ```
     """
-    return {"角色": role, "天赋技能": q_talent(role)}
+    return run(role, "天赋技能", q_talent)
