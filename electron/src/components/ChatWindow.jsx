@@ -84,7 +84,21 @@ export default function ChatWindow({ messages, streaming, loadingHistory, hasMor
             }}
           >
             {msg.role === 'assistant' ? (
-              <ReactMarkdown>{msg.content}</ReactMarkdown>
+              <>
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                {msg.audioUrl && (
+                  <button
+                    onClick={() => { const a = new Audio(msg.audioUrl); a.play(); }}
+                    style={{
+                      marginTop: 4, display: 'inline-block', background: 'none',
+                      border: 'none', cursor: 'pointer', fontSize: 16, color: '#1976d2',
+                    }}
+                    title="播放语音"
+                  >
+                    🔊
+                  </button>
+                )}
+              </>
             ) : (
               msg.content
             )}

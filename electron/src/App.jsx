@@ -16,6 +16,7 @@ export default function App() {
   const {
     messages, streaming, isStreaming, sendMessage, stopStreaming,
     loadingHistory, hasMoreHistory, loadMoreHistory,
+    voiceEnabled, setVoiceEnabled,
   } = useChat(userId, activeRole, sessionReady);
 
   if (!userId) {
@@ -72,7 +73,14 @@ export default function App() {
           hasMoreHistory={hasMoreHistory}
           onLoadMore={loadMoreHistory}
         />
-        <InputBox onSend={sendMessage} onStop={stopStreaming} isStreaming={isStreaming} disabled={!activeRole} />
+        <InputBox
+          onSend={sendMessage}
+          onStop={stopStreaming}
+          isStreaming={isStreaming}
+          disabled={!activeRole}
+          voiceEnabled={voiceEnabled}
+          onToggleVoice={() => setVoiceEnabled((v) => !v)}
+        />
       </div>
     </div>
   );

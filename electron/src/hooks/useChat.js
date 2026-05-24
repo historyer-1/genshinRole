@@ -9,6 +9,7 @@ export function useChat(userId, roleName, sessionReady) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
   const controllerRef = useRef(null);
   const offsetRef = useRef(0);
 
@@ -65,9 +66,29 @@ export function useChat(userId, roleName, sessionReady) {
         setStreaming('');
         setIsStreaming(false);
         controllerRef.current = null;
-      }
+      },
+      (audioB64, format) => {
+        // 收到音频，解码并附加到最后一条助手消息
+        const audioBytes = Uint8Array.from(atob(audioB64), c => c.charCodeAt(0));
+        const blob = new Blob([audioBytes], { type: `audio/${format}` });
+        const url = URL.createObjectURL(blob);
+        setMessages((prev) => {
+          const updated = [...prev];
+          for (let i = updated.length - 1; i >= 0; i--) {
+            if (updated[i].role === 'assistant') {
+              updated[i] = { ...updated[i], audioUrl: url };
+              break;
+            }
+          }
+          return updated;
+        });
+        // 自动播放
+        const audio = new Audio(url);
+        audio.play().catch(() => {});
+      },
+      voiceEnabled
     );
-  }, [userId, roleName, isStreaming]);
+  }, [userId, roleName, isStreaming, voiceEnabled]);
 
   const stopStreaming = useCallback(() => {
     if (controllerRef.current) {
@@ -101,5 +122,6 @@ export function useChat(userId, roleName, sessionReady) {
   return {
     messages, setMessages, streaming, isStreaming, sendMessage, stopStreaming,
     loadingHistory, hasMoreHistory, loadMoreHistory,
+    voiceEnabled, setVoiceEnabled,
   };
 }

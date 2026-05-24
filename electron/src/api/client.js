@@ -38,7 +38,7 @@ export async function fetchUserSessions(userId) {
   return data.sessions;
 }
 
-export function chatStream(userId, roleName, message, onToken, onDone, onError) {
+export function chatStream(userId, roleName, message, onToken, onDone, onError, onAudio, voice = false) {
   const controller = new AbortController();
 
   (async () => {
@@ -46,13 +46,14 @@ export function chatStream(userId, roleName, message, onToken, onDone, onError) 
       const res = await fetch(`${BASE_URL}/api/sessions/${userId}/${roleName}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, voice }),
         signal: controller.signal,
       });
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let eventType = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -62,7 +63,6 @@ export function chatStream(userId, roleName, message, onToken, onDone, onError) 
         const lines = buffer.split('\n');
         buffer = lines.pop();
 
-        let eventType = '';
         for (const line of lines) {
           if (line.startsWith('event:')) {
             eventType = line.slice(6).trim();
@@ -74,6 +74,10 @@ export function chatStream(userId, roleName, message, onToken, onDone, onError) 
                 onToken(data.content);
               } else if (eventType === 'done') {
                 onDone(data.content);
+              } else if (eventType === 'audio' && onAudio) {
+                onAudio(data.audio, data.format);
+              } else if (eventType === 'voice_error') {
+                console.warn('语音合成失败:', data.detail);
               }
             } catch {}
           }
