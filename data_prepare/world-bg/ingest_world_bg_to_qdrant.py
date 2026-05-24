@@ -321,7 +321,7 @@ def write_to_qdrant(chunks: list[dict], vectors: list[list[float]], collection_n
     2. 以 1024 维 Cosine 向量重新建集合；
     3. 批量 upsert 点位。
     """
-    qdrant = QdrantClient(host="127.0.0.1", port=6333)
+    qdrant = QdrantClient(host=os.getenv("qdrant_host"), port=int(os.getenv("qdrant_port")))
 
     if qdrant.collection_exists(collection_name=collection_name):
         qdrant.delete_collection(collection_name=collection_name)
@@ -369,8 +369,8 @@ def main() -> None:
 
     embedding_model = os.getenv("embedding_model")
     openai_client = OpenAI(
-        api_key=os.getenv("api_key"),
-        base_url=os.getenv("base_url"),
+        api_key=os.getenv("embedding_key"),
+        base_url=os.getenv("embedding_url"),
     )
 
     md_files = sorted(SOURCE_DIR.glob("*.md"))

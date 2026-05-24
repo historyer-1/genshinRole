@@ -1,39 +1,55 @@
-from pathlib import Path
+from __future__ import annotations
+
 import asyncio
 import os
 from urllib.parse import urlparse, urlunparse
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 import httpx
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
 # 加载项目根目录 .env，用于读取 MCP 服务地址
-ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
-load_dotenv(dotenv_path=ENV_PATH, override=False)
+load_dotenv(find_dotenv(), override=True)
 
 
-def get_xng_tools(mcp_url: str = "") -> list[BaseTool]:
+def _normalize_url(mcp_url: str = "") -> str:
     """
-    通过 MCP 客户端获取 xng_server 暴露的搜索工具列表。
+    读取并标准化 xng MCP 地址。
 
     Args:
-        mcp_url: xng MCP SSE 地址；为空时从 .env 的 xng_mcp_url 读取。
+        mcp_url: xng MCP SSE 地址；为空时从 .env 读取 mcp_host 和 mcp_port。
     """
-    # 优先使用参数传入的地址，否则使用 .env 配置
-    url = mcp_url.strip() if len(mcp_url) > 0 else str(os.getenv("xng_mcp_url", "")).strip()
-    if len(url) == 0:
-        raise ValueError("xng_mcp_url 未配置，请在 .env 中设置如 http://127.0.0.1:9000/sse")
+    if len(mcp_url.strip()) > 0:
+        url = mcp_url.strip()
+    else:
+        host = os.getenv("mcp_host")
+        port = os.getenv("mcp_port")
+        if not host or not port:
+            raise ValueError("mcp_host 或 mcp_port 未配置，请在 .env 中设置")
+        url = f"http://{host}:{port}"
+
     if not (url.startswith("http://") or url.startswith("https://")):
         url = f"http://{url}"
 
-    # 未指定路径时默认补上 FastMCP 的 SSE 入口，避免访问根路径导致 404
     parsed = urlparse(url)
     if parsed.path in ("", "/"):
         url = urlunparse(parsed._replace(path="/sse"))
+    return url
 
-    # 连接 MCP Server 并拉取可供 LangGraph 使用的工具对象
+
+async def create_xng_tools_async(mcp_url: str = "") -> tuple[MultiServerMCPClient, list[BaseTool]]:
+    """
+    创建新的 MCP 客户端连接并获取工具列表。调用方负责保持客户端存活。
+
+    Args:
+        mcp_url: xng MCP SSE 地址；为空时从 .env 读取 mcp_host 和 mcp_port。
+
+    Returns:
+        (client, tools) 元组，client 需保持引用以维持连接。
+    """
+    url = _normalize_url(mcp_url)
     client = MultiServerMCPClient(
         {
             "xng": {
@@ -43,10 +59,10 @@ def get_xng_tools(mcp_url: str = "") -> list[BaseTool]:
         }
     )
     try:
-        return asyncio.run(client.get_tools(server_name="xng"))
+        tools = await client.get_tools(server_name="xng")
     except* httpx.UnsupportedProtocol as exc:
         raise ConnectionError(
-            f"xng_mcp_url 协议不正确，请使用 http:// 或 https:// 前缀，当前值：{url}"
+            f"MCP 地址协议不正确，请使用 http:// 或 https:// 前缀，当前值：{url}"
         ) from exc
     except* httpx.ConnectError as exc:
         raise ConnectionError(
@@ -54,3 +70,18 @@ def get_xng_tools(mcp_url: str = "") -> list[BaseTool]:
         ) from exc
     except* httpx.HTTPError as exc:
         raise ConnectionError(f"xng MCP 服务请求失败（{url}）：{exc}") from exc
+
+    return client, tools
+
+
+def get_xng_tools(mcp_url: str = "") -> list[BaseTool]:
+    """
+    同步获取 xng_server 暴露的搜索工具列表（供遗留同步调用使用）。
+
+    Args:
+        mcp_url: xng MCP SSE 地址；为空时从 .env 读取 mcp_host 和 mcp_port。
+    """
+    async def _fetch():
+        _, tools = await create_xng_tools_async(mcp_url)
+        return tools
+    return asyncio.run(_fetch())

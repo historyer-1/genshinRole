@@ -26,11 +26,9 @@ def get_url() -> str:
     Args:
         无。
     """
-    raw = os.getenv("xng_mcp_url", "http://127.0.0.1:9000/sse").strip()
-    url = raw if raw.startswith("http://") or raw.startswith("https://") else f"http://{raw}"
-    if urlparse(url).path in {"", "/"}:
-        return f"{url.rstrip('/')}/sse"
-    return url
+    host = os.getenv("mcp_host", "127.0.0.1")
+    port = os.getenv("mcp_port", "9000")
+    return f"http://{host}:{port}/sse"
 
 
 def start_paimon(mcp_url: str = "") -> None:

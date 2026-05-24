@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Protocol
 import sys
 
 from mem0 import Memory
+from config import MEMORY_TOP_K
 from memory.config import mem0_cfg
 
 
@@ -25,7 +26,7 @@ class LongMem:
         self,
         user_id: str,
         mem: Memory | None = None,
-        top_k: int = 4,
+        top_k: int = MEMORY_TOP_K,
         workers: int = 1,
     ) -> None:
         # user_id 是长期记忆的隔离主键：不同用户会命中不同记忆空间。
@@ -75,3 +76,10 @@ class LongMem:
     def save_async(self, user: str, assistant: str) -> None:
         """异步提交写入任务，避免主线程等待长期记忆落库。"""
         self.pool.submit(self.save, user, assistant)
+
+    def close(self) -> None:
+        """关闭线程池，释放资源并允许进程退出。"""
+        if self.pool is None:
+            return
+        self.pool.shutdown(wait=True)
+        self.pool = None

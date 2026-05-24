@@ -1,8 +1,12 @@
 plan.txt
 .env
+CLAUDE.md
 
 __pycache__/
 **/__pycache__/
 .vscode/
-
+sql/
+.claude/
+electron/node_modules/
+voice/wav/
 

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 import sys
-import asyncio
 import os
 import re
 from langchain_core.messages import SystemMessage, merge_message_runs
@@ -11,7 +10,9 @@ from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from config import MEMORY_ROUNDS
 from memory.mem import LongMem
+from memory.operation import count_tokens, save_chat, save_summary
 from search.hybird_search import hybird_search
 
 
@@ -33,7 +34,7 @@ class BasicRole:
         llm: Any | None = None,
         tools: list[BaseTool] | None = None,
         vector_collections: list[str] | None = None,
-        memory_rounds: int = 7,
+        memory_rounds: int = MEMORY_ROUNDS,
         stream_output: bool = False,
         user_id: str | None = "default_user",
     ) -> None:
@@ -66,10 +67,13 @@ class BasicRole:
         # BasicRole 只依赖长期记忆端口，不依赖 mem0 的具体初始化细节。
         self.long_mem = LongMem(user_id=user_id) if user_id is not None else None
 
+        # MCP 客户端引用（由外部注入），防止 SSE 连接被 GC 回收
+        self._mcp_client = None
+
         # 实例化时直接编译图，后续对话复用同一个编译结果
         self.graph = self.build_react_graph()
 
-    def compress_history(self, history: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    async def compress_history(self, history: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """当轮数超过阈值时，把旧对话压缩为摘要并写回历史。"""
         round_count = sum(1 for msg in history if msg["role"] == "user")
         if round_count <= self.memory_rounds:
@@ -89,14 +93,22 @@ class BasicRole:
             "避免寒暄与重复。输出中文摘要：\n\n"
             f"{old_dialogue_text}"
         )
-        summary_result = self.llm.invoke([{"role": "user", "content": summary_prompt}])
+        summary_result = await self.llm.ainvoke([{"role": "user", "content": summary_prompt}])
         summary_text = str(summary_result.content)
+
+        # 压缩完成后更新摘要表
+        await save_summary(self.user_id, summary_text)
 
         compressed_history = [
             {"role": "user", "content": f"以下是较早对话的记忆摘要：\n{summary_text}"}
         ]
         compressed_history.extend(recent_messages)
         return compressed_history
+
+    def close(self) -> None:
+        """释放长期记忆资源，避免后台线程阻塞进程退出。"""
+        if self.long_mem is not None:
+            self.long_mem.close()
 
     @classmethod
     def _create_default_llm(cls) -> Any:
@@ -107,7 +119,7 @@ class BasicRole:
             model=os.getenv("model"),
             api_key=os.getenv("api_key"),
             base_url=os.getenv("base_url"),
-            temperature=0.6,          # 降低随机性，减少“脑补”  
+            temperature=0.6,          # 降低随机性，减少"脑补"
         )
 
     def build_react_graph(self) -> Any:
@@ -181,7 +193,6 @@ class BasicRole:
                 # 直接消费模型流式输出，并拼成完整消息供图继续处理
                 chunks: list[Any] = []
                 for chunk in llm_with_tools.stream(model_messages):
-                    print(chunk.content, end="", flush=True)
                     chunks.append(chunk)
                 response = merge_message_runs(chunks, chunk_separator="")[-1]
             else:
@@ -228,8 +239,74 @@ class BasicRole:
         )
 
         return graph_builder.compile()
- 
-    def chat(
+
+    async def chat_stream(
+        self,
+        user_message: str,
+        history: list[Dict[str, str]],
+    ) -> AsyncGenerator[Dict[str, str], None]:
+        """
+        流式执行一轮对话，逐 token 生成事件。
+
+        Args:
+            user_message: 本轮用户输入。
+            history: 已有对话历史，格式为 role/content 的字典列表。
+        """
+        # 拷贝历史消息，避免修改调用方传入的原始列表
+        messages = list(history) if history else []
+        # 用 <user_data> 标签包裹用户输入，方便 retrieve_context 节点用正则提取查询
+        wrapped_user_message = f"<user_data>{user_message}</user_data>"
+        messages.append({"role": "user", "content": wrapped_user_message})
+
+        # 角色攻略类工具（角色信息、属性、技能等）的返回值就是最终回答，
+        # 不需要模型再加工一次，所以单独标记出来做特殊处理。
+        direct_tools = {
+            "role_base", "role_attr", "role_info",
+            "role_con", "role_skill", "role_talent",
+        }
+
+        # 用于拼接模型逐 token 流式输出的完整文本
+        accumulated_content = ""
+        # 如果触发了角色攻略工具，这里会存工具返回的结果
+        tool_result = None
+
+        # astream_events 会以事件流的方式驱动整个 LangGraph 图执行，
+        # 图的执行路径：retrieve(RAG检索) -> agent(模型推理) -> [tools(工具调用)] -> ...
+        async for event in self.graph.astream_events({"messages": messages}, version="v2"):
+            # 模型逐 token 输出事件：每收到一小段文本就立刻 yield 给前端，实现打字机效果
+            if event["event"] == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                if chunk.content:
+                    accumulated_content += chunk.content
+                    yield {"type": "token", "content": chunk.content}
+            # 工具执行完成事件：如果命中的是角色攻略工具，记录其返回结果
+            elif event["event"] == "on_tool_end":
+                tool_name = event.get("name", "")
+                if tool_name in direct_tools:
+                    output = event["data"].get("output")
+                    if output is not None:
+                        # output 是 ToolMessage 对象，需要提取 .content 获取纯文本/JSON
+                        tool_result = str(getattr(output, "content", output))
+                    else:
+                        tool_result = ""
+
+        # 确定最终回复文本：
+        # - 如果角色攻略工具被调用过，直接用工具返回值（结构化数据，比模型复述更准确）
+        # - 否则用模型流式输出拼接起来的完整文本
+        if tool_result is not None:
+            assistant_text = tool_result
+        else:
+            assistant_text = accumulated_content
+
+        # 向前端发送完成事件，附带最终完整回复
+        yield {"type": "done", "content": assistant_text}
+
+        # 持久化本轮对话到数据库，并在后台写入长期记忆
+        await save_chat(self.user_id, user_message, assistant_text)
+        if self.long_mem is not None:
+            self.long_mem.save_async(user_message, assistant_text)
+
+    async def chat(
         self,
         user_message: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
@@ -241,45 +318,14 @@ class BasicRole:
             user_message: 本轮用户输入；为空时回退到初始化时的 user_prompt。
             history: 已有对话历史，格式为 role/content 的字典列表。
         """
-        messages = list(history) if history else []
         current_user_message = user_message if user_message is not None else self.user_prompt
-
-        # 仅将本轮用户输入包裹在 <user_data> 中传给模型，history 保持原样传递
-        wrapped_user_message = f"<user_data>{current_user_message}</user_data>"
-        messages.append({"role": "user", "content": wrapped_user_message})
-
-        # MCP 工具是异步实现，需走异步图执行以避免同步调用报错
-        result = asyncio.run(self.graph.ainvoke({"messages": messages}))
-
-        # 返回给业务层的历史使用原始用户输入，不暴露 <user_data> 标签
-        assistant_message = next(
-            msg.content for msg in reversed(result["messages"]) if msg.type in {"ai", "tool"}
-        )
-        assistant_text = str(assistant_message)
-
-        # 长期记忆写入改为异步提交：本轮回答先返回，记忆后台落库。
-        if self.long_mem is not None:
-            self.long_mem.save_async(current_user_message, assistant_text)
-
         conversation_history = list(history) if history else []
+        assistant_text = ""
+
+        async for event in self.chat_stream(current_user_message, conversation_history):
+            if event["type"] == "done":
+                assistant_text = event["content"]
+
         conversation_history.append({"role": "user", "content": current_user_message})
         conversation_history.append({"role": "assistant", "content": assistant_text})
-        return self.compress_history(conversation_history)
-
-    def multi_round_chat(self) -> None:
-        """命令行多轮对话：循环调用 chat，历史由压缩记忆机制自动维护。"""
-        history: List[Dict[str, str]] = []
-        while True:
-            user_message = input("你: ")
-            if user_message == "exit":
-                print("对话已结束。")
-                break
-
-            if self.stream_output:
-                # 流式模式下内容已在模型调用处输出，这里输出分割线提示
-                history = self.chat(user_message=user_message, history=history)
-                print("\n----- 助手 -----")
-            else:
-                history = self.chat(user_message=user_message, history=history)
-                assistant_message = next(msg["content"] for msg in reversed(history) if msg["role"] == "assistant")
-                print(f"助手: {assistant_message}")
+        return await self.compress_history(conversation_history)

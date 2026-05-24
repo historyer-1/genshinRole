@@ -1,26 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
 
-from dotenv import load_dotenv
-
-
-# 根目录 .env 路径：memory\config.py 位于项目根目录下的 memory 文件夹内，因此向上一级就是仓库根目录。
-ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
-
-
-def _split_qdrant(raw_url: str) -> tuple[str, int]:
-    """
-    解析 .env 中的 qdrant_url，统一输出 host 与 port。
-
-    支持以下两种常见写法：
-    1. 127.0.0.1:6333
-    2. http://127.0.0.1:6333
-    """
-    addr = raw_url.replace("http://", "").replace("https://", "")
-    host, port = addr.split(":")
-    return host, int(port)
+from dotenv import find_dotenv, load_dotenv
 
 
 def mem0_cfg() -> dict:
@@ -33,9 +15,10 @@ def mem0_cfg() -> dict:
     3. vector_store：mem0 连接的 qdrant 向量库配置（这里使用 docker 暴露端口）。
     """
     # 在 memory 模块内主动加载 .env，避免调用方忘记 load_dotenv 时出现配置缺失。
-    load_dotenv(dotenv_path=ENV_PATH, override=False)
+    load_dotenv(find_dotenv(), override=True)
 
-    qdrant_host, qdrant_port = _split_qdrant(os.getenv("qdrant_url"))
+    qdrant_host = os.getenv("qdrant_host")
+    qdrant_port = int(os.getenv("qdrant_port"))
     embedding_dims = int(os.getenv("embedding_dims", "1536"))
 
     # 这里显式指定 openai 兼容 provider，并把 base_url 指向 .env 中已有的兼容网关。
@@ -62,8 +45,8 @@ def mem0_cfg() -> dict:
             "provider": "openai",
             "config": {
                 "model": os.getenv("embedding_model"),
-                "api_key": os.getenv("api_key"),
-                "openai_base_url": os.getenv("base_url"),
+                "api_key": os.getenv("embedding_key"),
+                "openai_base_url": os.getenv("embedding_url"),
                 "embedding_dims": embedding_dims,
             },
         },

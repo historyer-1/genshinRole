@@ -221,9 +221,7 @@ def build_chunks(md_path: Path) -> list[dict]:
 
 def get_qdrant() -> QdrantClient:
     """从 .env 读取 Qdrant 连接信息。"""
-    qdrant_url = os.getenv("qdrant_url")
-    host, port = qdrant_url.split(":", 1)
-    return QdrantClient(host=host, port=int(port))
+    return QdrantClient(host=os.getenv("qdrant_host"), port=int(os.getenv("qdrant_port")))
 
 
 def embed_chunks(client: OpenAI, model: str, chunks: list[dict]) -> list[list[float]]:
@@ -284,8 +282,8 @@ def main() -> None:
     chunks = build_chunks(md_path)
 
     client = OpenAI(
-        api_key=os.getenv("api_key"),
-        base_url=os.getenv("base_url"),
+        api_key=os.getenv("embedding_key"),
+        base_url=os.getenv("embedding_url"),
     )
     model = os.getenv("embedding_model")
 

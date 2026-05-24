@@ -8,13 +8,21 @@ import jieba
 from openai import OpenAI
 from rank_bm25 import BM25Okapi
 from qdrant_client import QdrantClient
+from dotenv import load_dotenv
 
+from config import (
+    BM25_SCAN_LIMIT_PER_COLLECTION,
+    HYBRID_SEARCH_TOP_K,
+    BM25_TOP_K,
+    VECTOR_TOP_K,
+    RRF_K,
+    CONTEXT_TOTAL_BUDGET,
+    CONTEXT_MIN_CHUNK_SIZE,
+    CONTEXT_MAX_CHUNK_SIZE,
+    CONTEXT_MIN_REMAINING,
+)
 
-QDRANT_HOST = "127.0.0.1"
-QDRANT_PORT = 6333
-
-# 关键词检索时，每个集合最多拉取多少条文档做 BM25 计算
-BM25_SCAN_LIMIT_PER_COLLECTION = 3000
+load_dotenv()
 
 
 def _tokenize_for_bm25(text: str) -> list[str]:
@@ -34,7 +42,7 @@ def _tokenize_for_bm25(text: str) -> list[str]:
 
 
 def _normalize_text(raw_text: str) -> str:
-    """
+    r"""
     对原始文本做轻量清洗，减少 md\world-bg 中图片标记等噪声对检索排序的干扰：
     - 过滤 [Image](...) / ![Image](...) 这类图片行；
     - 合并多余空行。
@@ -65,7 +73,7 @@ def _load_documents_from_collections(
         collection_names: 需要读取的 Qdrant 集合名称列表。
         scan_limit_per_collection: 每个集合最多读取的文档数量上限。
     """
-    qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    qdrant = QdrantClient(host=os.getenv("qdrant_host"), port=int(os.getenv("qdrant_port")))
     documents: list[dict[str, Any]] = []
 
     for collection_name in collection_names:
@@ -107,7 +115,7 @@ def _load_documents_from_collections(
 def bm25_keyword_search(
     query: str,
     collection_names: list[str],
-    top_k: int = 20,
+    top_k: int = BM25_TOP_K,
     scan_limit_per_collection: int = BM25_SCAN_LIMIT_PER_COLLECTION,
 ) -> list[dict[str, Any]]:
     """
@@ -147,7 +155,7 @@ def bm25_keyword_search(
 def vector_search(
     query: str,
     collection_names: list[str],
-    top_k: int = 20,
+    top_k: int = VECTOR_TOP_K,
 ) -> list[dict[str, Any]]:
     """
     向量检索：
@@ -161,15 +169,15 @@ def vector_search(
         top_k: 向量检索返回的最大候选数量。
     """
     openai_client = OpenAI(
-        api_key=os.getenv("api_key"),
-        base_url=os.getenv("base_url"),
+        api_key=os.getenv("embedding_key"),
+        base_url=os.getenv("embedding_url"),
     )
     query_embedding = openai_client.embeddings.create(
         model=os.getenv("embedding_model"),
         input=[query],
     ).data[0].embedding
 
-    qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    qdrant = QdrantClient(host=os.getenv("qdrant_host"), port=int(os.getenv("qdrant_port")))
     all_hits: list[dict[str, Any]] = []
 
     for collection_name in collection_names:
@@ -225,7 +233,7 @@ def _select_hits_for_context(
     min_rrf = best_rrf * 0.55
     selected_hits = [item for item in fused_hits if item["rrf_score"] >= min_rrf][:top_k]
 
-    total_budget = 2800
+    total_budget = CONTEXT_TOTAL_BUDGET
     if len(query) <= 12:
         total_budget = int(total_budget * 0.72)
     elif len(query) >= 60:
@@ -238,7 +246,7 @@ def _select_hits_for_context(
     for rank, item in enumerate(selected_hits, start=1):
         ratio = item["rrf_score"] / total_rrf_score
         text_budget = int(total_budget * ratio)
-        text_budget = max(220, min(text_budget, 900))
+        text_budget = max(CONTEXT_MIN_CHUNK_SIZE, min(text_budget, CONTEXT_MAX_CHUNK_SIZE))
         text_budget = min(text_budget, remaining_budget)
 
         text = str(item["text"]).strip()
@@ -267,7 +275,7 @@ def _select_hits_for_context(
             }
         )
         remaining_budget -= item_cost
-        if remaining_budget < 180:
+        if remaining_budget < CONTEXT_MIN_REMAINING:
             break
 
     return context_items
@@ -276,10 +284,10 @@ def _select_hits_for_context(
 def hybird_search(
     query: str,
     collection_names: list[str],
-    top_k: int = 8,
-    bm25_top_k: int = 20,
-    vector_top_k: int = 20,
-    rrf_k: int = 60,
+    top_k: int = HYBRID_SEARCH_TOP_K,
+    bm25_top_k: int = BM25_TOP_K,
+    vector_top_k: int = VECTOR_TOP_K,
+    rrf_k: int = RRF_K,
 ) -> list[dict[str, Any]]:
     """
     混合检索主函数（hybird-search）：
