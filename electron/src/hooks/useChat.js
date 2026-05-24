@@ -3,6 +3,15 @@ import { chatStream, fetchBatchHistory } from '../api/client';
 
 const LOAD_LIMIT = 10;
 
+function splitSentences(text) {
+  const parts = text.split(/([。！？…\n]+)/);
+  const result = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    result.push(parts[i] + (parts[i + 1] || ''));
+  }
+  return result.filter((s) => s.length > 0);
+}
+
 export function useChat(userId, roleName, sessionReady) {
   const [messages, setMessages] = useState([]);
   const [streaming, setStreaming] = useState('');
@@ -12,6 +21,8 @@ export function useChat(userId, roleName, sessionReady) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const controllerRef = useRef(null);
   const offsetRef = useRef(0);
+  const pendingTextRef = useRef(null);
+  const typewriterTimerRef = useRef(null);
 
   // 会话就绪后自动加载最近的历史记录
   useEffect(() => {
@@ -41,6 +52,13 @@ export function useChat(userId, roleName, sessionReady) {
   const sendMessage = useCallback((text) => {
     if (!userId || !roleName || isStreaming) return;
 
+    // 清理上一次的打字机
+    if (typewriterTimerRef.current) {
+      clearTimeout(typewriterTimerRef.current);
+      typewriterTimerRef.current = null;
+    }
+    pendingTextRef.current = null;
+
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
     setStreaming('');
     setIsStreaming(true);
@@ -51,39 +69,76 @@ export function useChat(userId, roleName, sessionReady) {
       userId,
       roleName,
       text,
+      // onToken
       (token) => {
         accumulated += token;
-        setStreaming(accumulated);
+        if (!voiceEnabled) {
+          setStreaming(accumulated);
+        }
       },
+      // onDone
       (fullText) => {
-        setMessages((prev) => [...prev, { role: 'assistant', content: fullText }]);
-        setStreaming('');
-        setIsStreaming(false);
-        controllerRef.current = null;
+        if (voiceEnabled) {
+          pendingTextRef.current = fullText;
+          setStreaming('语音生成中...');
+        } else {
+          setMessages((prev) => [...prev, { role: 'assistant', content: fullText }]);
+          setStreaming('');
+          setIsStreaming(false);
+          controllerRef.current = null;
+        }
       },
+      // onError
       (err) => {
+        pendingTextRef.current = null;
         setMessages((prev) => [...prev, { role: 'assistant', content: `[错误] ${err}` }]);
         setStreaming('');
         setIsStreaming(false);
         controllerRef.current = null;
       },
+      // onAudio
       (audioB64, format) => {
-        // 收到音频，解码并附加到最后一条助手消息
-        const audioBytes = Uint8Array.from(atob(audioB64), c => c.charCodeAt(0));
+        const text = pendingTextRef.current;
+        if (!text) return;
+        pendingTextRef.current = null;
+
+        const audioBytes = Uint8Array.from(atob(audioB64), (c) => c.charCodeAt(0));
         const blob = new Blob([audioBytes], { type: `audio/${format}` });
         const url = URL.createObjectURL(blob);
-        setMessages((prev) => {
-          const updated = [...prev];
-          for (let i = updated.length - 1; i >= 0; i--) {
-            if (updated[i].role === 'assistant') {
-              updated[i] = { ...updated[i], audioUrl: url };
-              break;
-            }
-          }
-          return updated;
-        });
-        // 自动播放
         const audio = new Audio(url);
+
+        audio.addEventListener('loadedmetadata', () => {
+          const duration = audio.duration;
+          const sentences = splitSentences(text);
+          const totalChars = text.length;
+
+          audio.play();
+
+          let idx = 0;
+          let revealed = '';
+
+          const revealNext = () => {
+            if (idx >= sentences.length) {
+              setMessages((prev) => [...prev, { role: 'assistant', content: text, audioUrl: url }]);
+              setStreaming('');
+              setIsStreaming(false);
+              controllerRef.current = null;
+              typewriterTimerRef.current = null;
+              return;
+            }
+            revealed += sentences[idx];
+            setStreaming(revealed);
+            const delay = (sentences[idx].length / totalChars) * duration * 1000;
+            idx++;
+            typewriterTimerRef.current = setTimeout(revealNext, delay);
+          };
+
+          setStreaming(sentences[0]);
+          idx = 1;
+          const firstDelay = (sentences[0].length / totalChars) * duration * 1000;
+          typewriterTimerRef.current = setTimeout(revealNext, firstDelay);
+        });
+
         audio.play().catch(() => {});
       },
       voiceEnabled
@@ -91,11 +146,18 @@ export function useChat(userId, roleName, sessionReady) {
   }, [userId, roleName, isStreaming, voiceEnabled]);
 
   const stopStreaming = useCallback(() => {
+    if (typewriterTimerRef.current) {
+      clearTimeout(typewriterTimerRef.current);
+      typewriterTimerRef.current = null;
+    }
     if (controllerRef.current) {
       controllerRef.current.abort();
       controllerRef.current = null;
     }
-    if (streaming) {
+    if (pendingTextRef.current) {
+      setMessages((prev) => [...prev, { role: 'assistant', content: pendingTextRef.current }]);
+      pendingTextRef.current = null;
+    } else if (streaming && streaming !== '语音生成中...') {
       setMessages((prev) => [...prev, { role: 'assistant', content: streaming }]);
     }
     setStreaming('');
