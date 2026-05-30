@@ -9,4 +9,4 @@ sql/
 .claude/
 electron/node_modules/
 voice/wav/
-
+photo/
